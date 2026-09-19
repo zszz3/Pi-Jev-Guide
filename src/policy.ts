@@ -30,21 +30,11 @@ export function localDecision(action: Action): Decision | undefined {
     typeof action.input.path === "string"
       ? resolve(action.cwd, action.input.path)
       : "";
+  // Transfers use the ordinary semantic/custom checks, not a local credential gate.
   if (
-    transport.test(command) &&
-    (sensitivePath.test(command) ||
-      /PRIVATE KEY|\$(?:\{)?(?:\w*(?:TOKEN|SECRET|PASSWORD|API_KEY))\b/i.test(
-        command,
-      ))
+    sensitivePath.test(path) ||
+    (sensitivePath.test(command) && !transport.test(command))
   ) {
-    return {
-      kind: "block",
-      source: "local",
-      reason:
-        "命令疑似向外传输本地凭据。请改用不包含凭据的输入；此次调用未获放行。",
-    };
-  }
-  if (sensitivePath.test(path) || sensitivePath.test(command)) {
     return {
       kind: "confirm",
       source: "local",
