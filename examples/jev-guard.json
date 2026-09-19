@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "builtins": {
+    "local-risk": true,
+    "semantic-action": true,
+    "redact-output": true,
+    "semantic-output": true,
+    "repeated-failure": true,
+    "completion-check": true
+  },
+  "rules": [
+    {
+      "id": "review-release",
+      "when": "tool_call",
+      "match": {
+        "tools": [
+          "bash"
+        ],
+        "contains": "npm publish"
+      },
+      "action": "confirm",
+      "message": "请确认此次包发布的版本与目标。"
+    },
+    {
+      "id": "hide-internal-report",
+      "when": "tool_result",
+      "match": {
+        "contains": "INTERNAL ONLY"
+      },
+      "action": "hide",
+      "message": "该结果标记为内部材料。"
+    },
+    {
+      "id": "review-public-api",
+      "enabled": false,
+      "when": "tool_call",
+      "match": {
+        "tools": [
+          "write",
+          "edit"
+        ],
+        "pathPrefix": "src/api"
+      },
+      "question": "Does this proposed change break compatibility with the public API?",
+      "threshold": 0.9,
+      "action": "confirm",
+      "onError": "block",
+      "message": "此修改可能影响公共 API 的兼容性，请先确认。"
+    }
+  ]
+}

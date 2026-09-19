@@ -1,0 +1,58 @@
+{
+  "name": "pi-jev-guard",
+  "version": "0.2.0",
+  "description": "Configurable lifecycle rules and built-in Jev guards for Pi Coding Agent.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "examples",
+    "ARCHITECTURE.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "0.6.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "jev",
+    "guardrails"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zszz3/Pi-Jev-Guide.git"
+  },
+  "homepage": "https://github.com/zszz3/Pi-Jev-Guide#readme",
+  "bugs": {
+    "url": "https://github.com/zszz3/Pi-Jev-Guide/issues"
+  }
+}
