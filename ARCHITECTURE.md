@@ -54,3 +54,5 @@ flowchart TD
 目前没有提供任意第三方 JavaScript 检查器加载、可执行 shell 回调、所有 Pi 事件的通用注册 UI、DSH 适配或规则商城。核心接口在源码中可复用，但尚未作为独立的稳定 SDK 发布。没有自动信任仓库配置；需要项目专用配置时，由用户明确设置 `JEV_GUARD_CONFIG`。
 
 这是经过接口和行为测试的实验性实现。真实 Jev 判定效果、TUI 真人操作、误报率和长期运行仍需验证。
+
+0.2.1 新增 `/jevguard login` 和 `/jevguard logout`。凭据独立保存在 Pi 用户目录中；隐藏输入和原子写入位于 `src/auth.ts`，验证后在当前会话替换 Judge，不要求重启。

@@ -20,6 +20,7 @@ import { installGuard } from "../src/index.ts";
 import { readConfig, type Config } from "../src/config.ts";
 import type { Judge } from "../src/judge.ts";
 import { parseSettings, type Settings } from "../src/settings.ts";
+import { readApiKey, saveApiKey } from "../src/auth.ts";
 
 async function harness(
   options: {
@@ -33,6 +34,9 @@ async function harness(
     editorResult?: string;
     choices?: string[];
     inputs?: string[];
+    authPath?: string;
+    secretInput?: string;
+    judgeFactory?: (config: Config) => Judge | undefined;
   } = {},
 ) {
   const runtime = createExtensionRuntime();
@@ -51,6 +55,8 @@ async function harness(
       installGuard(pi, options.config ?? readConfig({}), options.judge, {
         settings: options.settings,
         settingsPath: options.settingsPath,
+        authPath: options.authPath,
+        judgeFactory: options.judgeFactory,
       }),
     sessions.getCwd(),
     createEventBus(),
@@ -76,6 +82,7 @@ async function harness(
         editor: async () => options.editorResult,
         select: async () => options.choices?.shift(),
         input: async () => options.inputs?.shift(),
+        custom: async <T>() => options.secretInput as T,
         confirm: async () => {
           confirmations++;
           if (options.confirmationError) throw new Error("dialog closed");
@@ -105,6 +112,163 @@ const call = (id: string, command: string): ToolCallEvent => ({
   toolCallId: id,
   toolName: "bash",
   input: { command },
+});
+
+test("login validates a fixed payload, saves key, activates immediately and survives reload", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-login-"));
+  const path = join(dir, "auth.json");
+  const key = "synthetic-login-key";
+  const states: string[] = [];
+  const factory = (config: Config): Judge | undefined =>
+    config.apiKey
+      ? {
+          evaluate: async (state, questions) => {
+            assert.equal(config.apiKey, key);
+            assert.ok(!state.includes(key));
+            states.push(state);
+            return Object.fromEntries(
+              Object.keys(questions).map((id) => [
+                id,
+                id === "connection" ? 1 : 0,
+              ]),
+            );
+          },
+        }
+      : undefined;
+  try {
+    const h = await harness({
+      ui: true,
+      authPath: path,
+      secretInput: key,
+      judgeFactory: factory,
+    });
+    await h.command("login");
+    assert.equal(readApiKey(path), key);
+    assert.deepEqual(states, ["Connection test: 2 + 2 = 4."]);
+    await h.runner.emitToolCall(call("x", "npm test"));
+    assert.equal(states.length, 2);
+    assert.ok(
+      !JSON.stringify([h.messages, h.notices, h.sessions.getBranch()]).includes(
+        key,
+      ),
+    );
+    const resumed = await harness({ authPath: path, judgeFactory: factory });
+    await resumed.runner.emitToolCall(call("y", "npm test"));
+    assert.equal(states.length, 3);
+    await resumed.command("logout");
+    assert.equal(readApiKey(path), undefined);
+    await resumed.runner.emitToolCall(call("z", "npm test"));
+    assert.equal(states.length, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed login retains the previous key and never reports the server error body", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-login-"));
+  const path = join(dir, "auth.json");
+  const old = "synthetic-existing-key",
+    next = "synthetic-rejected-key";
+  try {
+    saveApiKey(path, old);
+    const used: string[] = [];
+    const h = await harness({
+      ui: true,
+      authPath: path,
+      secretInput: next,
+      judgeFactory: (config) => ({
+        evaluate: async (_state, questions) => {
+          used.push(config.apiKey!);
+          if (config.apiKey === next) throw new Error(next);
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [id, 0]),
+          );
+        },
+      }),
+    });
+    await h.command("login");
+    assert.equal(readApiKey(path), old);
+    await h.runner.emitToolCall(call("x", "npm test"));
+    assert.deepEqual(used, [next, old]);
+    assert.ok(!JSON.stringify([h.messages, h.notices]).includes(next));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cancelled login and noninteractive login do not save credentials", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-login-"));
+  const path = join(dir, "auth.json");
+  try {
+    const h = await harness({ ui: true, authPath: path });
+    await h.command("login");
+    assert.equal(readApiKey(path), undefined);
+    const headless = await harness({
+      authPath: path,
+      secretInput: "synthetic-not-to-save",
+    });
+    await headless.command("login");
+    assert.equal(readApiKey(path), undefined);
+    assert.ok(headless.messages.some((text) => text.includes("交互终端")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saved key takes precedence and logout falls back to environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-login-"));
+  const path = join(dir, "auth.json");
+  try {
+    saveApiKey(path, "synthetic-saved");
+    const keys: Array<string | undefined> = [];
+    const h = await harness({
+      authPath: path,
+      config: { ...readConfig({}), apiKey: "synthetic-env" },
+      judgeFactory: (config) => {
+        keys.push(config.apiKey);
+        return { evaluate: async () => ({}) };
+      },
+    });
+    await h.command("logout");
+    assert.deepEqual(keys, ["synthetic-saved", "synthetic-env"]);
+    assert.ok(h.messages.some((text) => text.includes("环境变量仍然生效")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("session shutdown prevents a pending login from saving or enabling its key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-login-"));
+  const path = join(dir, "auth.json");
+  let started!: () => void, finish!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  try {
+    const h = await harness({
+      ui: true,
+      authPath: path,
+      secretInput: "synthetic-pending",
+      judgeFactory: () => ({
+        evaluate: async () => {
+          started();
+          await completed;
+          return { connection: 1 };
+        },
+      }),
+    });
+    const pending = h.command("login");
+    await ready;
+    await h.runner.emit({ type: "session_shutdown", reason: "quit" });
+    finish();
+    await pending;
+    assert.equal(readApiKey(path), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("custom tool rule blocks even an otherwise allowed read-only tool", async () => {

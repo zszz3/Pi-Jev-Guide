@@ -2,7 +2,9 @@
 
 原版 Pi Coding Agent 插件：按时机配置规则，并自带风险检查、输出脱敏、重复失败和缺少验证提醒。
 
-0.2.0 支持交互添加规则：安装后运行 `/jevguard add`，依次选择 **检查时机 → 本地匹配或 Jev 判断 → 命中后的动作**。无需修改插件源码。
+0.2.1 支持 `/jevguard login` 配置 API key，验证后立即生效。
+
+支持交互添加规则：安装后运行 `/jevguard add`，依次选择 **检查时机 → 本地匹配或 Jev 判断 → 命中后的动作**。无需修改插件源码。
 
 适配并测试：`@earendil-works/pi-coding-agent 0.85.1`，Node.js 22.19+。这是独立的实验性插件，不是 TypeSafe 或 Pi 官方产品。当前提供 Pi 适配器；DSH 适配器尚未实现，判断与追踪模块可复用。
 
@@ -28,7 +30,7 @@
 pi install https://github.com/zszz3/Pi-Jev-Guide
 ```
 
-已打开的 Pi 会话运行 `/reload`，然后用 `/jevguard add` 添加规则。
+已打开的 Pi 会话运行 `/reload`，然后运行 `/jevguard login` 配置 key，用 `/jevguard add` 添加规则。
 
 在这个项目目录安装运行依赖，然后登记为本地 Pi 包：
 
@@ -37,9 +39,23 @@ npm install --omit=dev
 pi install /absolute/path/to/pi-jev-guard
 ```
 
-已打开的 Pi 会话输入 `/reload`。环境变量需要在启动 Pi 的进程中设置；修改 API key 或阈值后，重启 Pi。
+### 配置 API key
 
-使用 TypeSafe 的 `TYPESAFE_API_KEY` 环境变量启用 Jev。不要把 key 写入仓库，也不要把真实 key 当作测试样本粘贴到对话中。启动提示与 `/jevguard status` 会明确显示是在线检查还是仅本地规则。
+在 Pi 里输入一个命令：
+
+```text
+/jevguard login
+```
+
+在隐藏输入框粘贴 TypeSafe API key，按 Enter。插件用一条固定测试请求验证，成功后保存并立即启用 Jev，后续启动自动读取，不需要环境变量或重启。Esc 取消；验证或保存失败时保留原配置。
+
+- `/jevguard status`：查看是否启用以及 key 来源，不显示 key。
+- `/jevguard login`：也可用来更换 key。
+- `/jevguard logout`：删除保存的 key，回到本地检查；自定义语义规则仍按 `onError` 处理。
+
+Key 保存在 Pi 用户目录的 `jev-guard/auth.json`（通常为 `~/.pi/agent/jev-guard/auth.json`），是权限为 `0600` 的明文凭据文件，不在项目配置或会话记录中。输入框只显示星号；不要把 key 放在命令参数中。验证请求只包含固定测试文本，不包含项目内容；启用后，正常语义检查会将脱敏后的相关上下文发送到 TypeSafe。
+
+无交互界面的自动化仍可使用 `TYPESAFE_API_KEY`。保存的 key 优先于环境变量；退出登录后，如环境变量仍存在，会回退到该 key 并明确提示。模型、超时和阈值环境变量的变更仍需重启 Pi。
 
 只想临时加载、不登记全局包，可以在安装依赖后运行：
 
@@ -52,6 +68,8 @@ pi -e /absolute/path/to/pi-jev-guard/src/index.ts
 ## 命令
 
 ```text
+/jevguard login
+/jevguard logout
 /jevguard add
 /jevguard rules
 /jevguard config
@@ -74,11 +92,11 @@ pi -e /absolute/path/to/pi-jev-guard/src/index.ts
 
 `config` 打开完整 JSON 编辑器，`reload` 重新读取文件。规则变更需要 Agent 空闲。新配置先完整校验，再写入临时文件并原子替换；校验失败保留旧配置。启动时配置无效会显示错误并暂停输入和工具调用，可通过配置命令修复。
 
-API key、模型、超时和自带 Jev 检查的默认阈值仍由环境变量提供；AGENTS.md 只是待检查的规则内容，不会变更插件配置。
+API key 通过 `/jevguard login` 保存；模型、超时和自带 Jev 检查的默认阈值由环境变量提供；AGENTS.md 只是待检查的规则内容，不会变更插件配置。
 
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | 未设置 | 未设置时仅本地检查 |
+| `TYPESAFE_API_KEY` | 未设置 | 自动化备用方式；优先使用 login 保存的 key |
 | `JEV_GUARD_MODEL` | `jev-latest` | 比较不同运行时建议固定服务支持的模型版本 |
 | `JEV_GUARD_MODE` | `guard` | `guard` 或 `observe` |
 | `JEV_GUARD_TIMEOUT_MS` | `2500` | 单次请求超时；不自动重试 |
@@ -159,6 +177,7 @@ src/judge.ts     TypeSafe 官方 SDK 接入
 src/redact.ts    本地文本与元数据脱敏
 src/tracker.ts   验证证据、失败计数、恢复状态
 src/rules.ts     AGENTS.md 加载
+src/auth.ts     隐藏输入与凭据保存／读取／删除
 src/config.ts   环境配置
 src/settings.ts 规则结构、能力校验与持久化
 src/engine.ts   不依赖 Pi 的匹配与语义规则执行器

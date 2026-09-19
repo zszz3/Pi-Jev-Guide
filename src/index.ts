@@ -8,6 +8,13 @@ import { decide, type Action, type Decision } from "./policy.ts";
 import { bounded, redact, redactValue } from "./redact.ts";
 import { readRules } from "./rules.ts";
 import { Tracker } from "./tracker.ts";
+import {
+  readApiKey,
+  saveApiKey,
+  deleteApiKey,
+  validateApiKey,
+  promptApiKey,
+} from "./auth.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join, resolve } from "node:path";
 import {
@@ -32,8 +39,31 @@ export function installGuard(
   pi: ExtensionAPI,
   config: Config,
   judge = createJudge(config),
-  options: { settings?: Settings; settingsPath?: string } = {},
+  options: {
+    settings?: Settings;
+    settingsPath?: string;
+    authPath?: string;
+    judgeFactory?: (config: Config) => Judge | undefined;
+  } = {},
 ): void {
+  const environmentKey = config.apiKey;
+  const judgeFactory = options.judgeFactory ?? createJudge;
+  let authError = false;
+  let authBusy = false;
+  let keySource = environmentKey ? "环境变量" : "未配置";
+  if (options.authPath) {
+    try {
+      const saved = readApiKey(options.authPath);
+      if (saved) {
+        const savedJudge = judgeFactory({ ...config, apiKey: saved });
+        config.apiKey = saved;
+        judge = savedJudge;
+        keySource = "本地保存";
+      }
+    } catch {
+      authError = true;
+    }
+  }
   let settings = options.settings ?? defaultSettings();
   let settingsError = false;
   if (options.settingsPath) {
@@ -53,8 +83,10 @@ export function installGuard(
   let lifetime = new AbortController();
   const knownSecrets = [
     ...config.knownSecrets,
+    ...(environmentKey ? [environmentKey] : []),
     ...(config.apiKey ? [config.apiKey] : []),
   ];
+  config.knownSecrets = knownSecrets;
   const trace: string[] = [];
   let checks = 0;
   let blocks = 0;
@@ -163,6 +195,11 @@ export function installGuard(
   };
   pi.on("session_start", (_event, ctx) => {
     restore(ctx);
+    if (authError)
+      report(
+        ctx,
+        "保存的 API key 无法读取，请用 /jevguard login 重新配置；当前使用环境变量或本地检查。",
+      );
     if (settingsError)
       report(
         ctx,
@@ -172,7 +209,7 @@ export function installGuard(
       ctx.ui.notify(
         judge
           ? "Jev Guard 已启用：动作及输出检查会将脱敏后的任务、参数和规则发送到 TypeSafe。/jevguard status 查看状态。"
-          : "Jev Guard 仅运行本地规则；设置 TYPESAFE_API_KEY 并重启 Pi 后启用语义检查。",
+          : "Jev Guard 仅运行本地规则；运行 /jevguard login 配置 API key 后立即启用 Jev。",
         "info",
       );
   });
@@ -531,9 +568,95 @@ export function installGuard(
 
   pi.registerCommand("jevguard", {
     description:
-      "Jev Guard: add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
+      "Jev Guard: login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
     handler: async (args, ctx) => {
       const input = args.trim();
+      if (/^(login|logout)(?:\s|$)/.test(input)) {
+        if (input !== "login" && input !== "logout") {
+          report(
+            ctx,
+            "请仅输入 /jevguard login 或 /jevguard logout，不要把 key 放在命令参数里。",
+          );
+          return;
+        }
+        if (!ctx.isIdle() || authBusy) {
+          report(ctx, "请等待当前运行或配置操作结束。");
+          return;
+        }
+        if (!options.authPath) {
+          report(ctx, "当前未配置凭据文件位置。");
+          return;
+        }
+        if (input === "login" && (!ctx.hasUI || ctx.mode !== "tui")) {
+          report(
+            ctx,
+            "请在 Pi 交互终端运行 /jevguard login；无界面模式仍可使用 TYPESAFE_API_KEY。",
+          );
+          return;
+        }
+        authBusy = true;
+        const currentEpoch = epoch;
+        const signal = lifetime.signal;
+        try {
+          if (input === "logout") {
+            const fallback = judgeFactory({
+              ...config,
+              apiKey: environmentKey,
+            });
+            deleteApiKey(options.authPath);
+            config.apiKey = environmentKey;
+            judge = fallback;
+            keySource = environmentKey ? "环境变量" : "未配置";
+            authError = false;
+            status(ctx);
+            report(
+              ctx,
+              environmentKey
+                ? "已删除本地保存的 key；环境变量仍然生效。"
+                : "已删除本地保存的 key，当前切换为本地检查；自定义语义规则按 onError 处理。",
+            );
+            return;
+          }
+          const entered = await promptApiKey(ctx);
+          if (entered === undefined) return;
+          const key = validateApiKey(entered);
+          knownSecrets.push(key);
+          if (signal.aborted || epoch !== currentEpoch) return;
+          const candidate = judgeFactory({ ...config, apiKey: key });
+          if (!candidate) throw new Error("No client");
+          report(ctx, "正在验证 API key…");
+          const result = await candidate.evaluate(
+            "Connection test: 2 + 2 = 4.",
+            { connection: "Is the arithmetic statement correct?" },
+            signal,
+          );
+          if (
+            !Number.isFinite(result.connection) ||
+            result.connection < 0 ||
+            result.connection > 1
+          )
+            throw new Error("Invalid response");
+          if (signal.aborted || epoch !== currentEpoch) return;
+          saveApiKey(options.authPath, key);
+          config.apiKey = key;
+          judge = candidate;
+          keySource = "本地保存";
+          authError = false;
+          status(ctx);
+          report(
+            ctx,
+            "API key 已验证并保存，Jev 已立即启用。检查会将脱敏后的任务、参数、规则及启用的输出检查内容发送到 TypeSafe。",
+          );
+        } catch {
+          report(
+            ctx,
+            "API key 配置未完成（格式、网络、服务或文件读写失败），原配置保持不变。请检查后重试。",
+          );
+        } finally {
+          authBusy = false;
+        }
+        return;
+      }
       if (input === "rules") {
         report(
           ctx,
@@ -675,12 +798,12 @@ export function installGuard(
         ctx.ui.notify(trace.join("\n") || "暂无检查记录。", "info");
       } else if (!input || input === "status") {
         ctx.ui.notify(
-          `模式：${config.mode}\nJev：${judge ? config.model : "未配置，仅本地规则"}\n配置：${settingsError ? "无效（暂停输入与动作）" : (options.settingsPath ?? "内存")}\n启用自带检查：${Object.values(settings.builtins).filter(Boolean).length}/6，自定义规则：${settings.rules.filter((r) => r.enabled).length}\n本次加载后检查 ${checks} 次，拦截 ${blocks} 次，脱敏/隐藏 ${masks} 次\n未验证写入：${tracker.revision > tracker.verifiedRevision ? "有" : "无已观察记录"}\n输出语义检查：${judge && config.scanOutput && enabled("semantic-output") ? "开启" : "关闭"}`,
+          `模式：${config.mode}\nJev：${judge ? config.model : "未配置，仅本地规则"}\nAPI key：${keySource}${authError ? "（保存文件读取失败）" : ""}\n配置：${settingsError ? "无效（暂停输入与动作）" : (options.settingsPath ?? "内存")}\n启用自带检查：${Object.values(settings.builtins).filter(Boolean).length}/6，自定义规则：${settings.rules.filter((r) => r.enabled).length}\n本次加载后检查 ${checks} 次，拦截 ${blocks} 次，脱敏/隐藏 ${masks} 次\n未验证写入：${tracker.revision > tracker.verifiedRevision ? "有" : "无已观察记录"}\n输出语义检查：${judge && config.scanOutput && enabled("semantic-output") ? "开启" : "关闭"}`,
           "info",
         );
       } else
         ctx.ui.notify(
-          "用法：/jevguard add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
+          "用法：/jevguard login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
           "warning",
         );
     },
@@ -691,5 +814,8 @@ export default function jevGuard(pi: ExtensionAPI): void {
   const settingsPath = process.env.JEV_GUARD_CONFIG
     ? resolve(process.env.JEV_GUARD_CONFIG)
     : join(getAgentDir(), "jev-guard.json");
-  installGuard(pi, readConfig(), undefined, { settingsPath });
+  installGuard(pi, readConfig(), undefined, {
+    settingsPath,
+    authPath: join(getAgentDir(), "jev-guard", "auth.json"),
+  });
 }
