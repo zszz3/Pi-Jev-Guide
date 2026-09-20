@@ -7,6 +7,11 @@ export const stages = [
   "tool_call",
   "tool_result",
   "turn_end",
+  "turn_start",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "agent_end",
 ] as const;
 export type Stage = (typeof stages)[number];
 export type RuleAction = "warn" | "confirm" | "block" | "hide";
@@ -15,6 +20,11 @@ export const capabilities: Record<Stage, readonly RuleAction[]> = {
   tool_call: ["warn", "confirm", "block"],
   tool_result: ["warn", "hide"],
   turn_end: ["warn"],
+  turn_start: ["warn"],
+  tool_execution_start: ["warn"],
+  tool_execution_update: ["warn"],
+  tool_execution_end: ["warn"],
+  agent_end: ["warn"],
 };
 export const builtinGuards = {
   "local-risk": {
@@ -125,9 +135,9 @@ export function parseSettings(value: unknown): Settings {
       r.onError ??
       (when === "tool_result"
         ? "hide"
-        : when === "turn_end"
-          ? "warn"
-          : "block");
+        : capabilities[when].includes("block")
+          ? "block"
+          : "warn");
     if (!capabilities[when].includes(onError as RuleAction))
       throw new Error(`${label}: unsupported onError for ${when}`);
     const threshold = r.threshold ?? 0.9;

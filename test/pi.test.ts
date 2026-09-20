@@ -781,3 +781,58 @@ test("completion coaching happens once, survives resume, and does not force extr
   );
   assert.deepEqual(custom.errors, []);
 });
+
+test("runtime stages dispatch custom Jev rules as notifications", async () => {
+  const stages = ["turn_start", "tool_execution_start", "tool_execution_update", "tool_execution_end", "agent_end"];
+  const seen: string[] = [];
+  const h = await harness({ui:true,settings:parseSettings({version:1,rules:stages.map(when=>({id:`runtime-${when.replaceAll('_','-')}`,when,question:"Does this require human attention?",action:"warn",message:`review ${when}`}))}),judge:{evaluate:async(state,questions)=>{
+    seen.push(JSON.parse(state).when);
+    return Object.fromEntries(Object.keys(questions).map(id=>[id,1]));
+  }}});
+  h.notices.length = 0;
+  await h.runner.emit({type:"turn_start",turnIndex:0,timestamp:Date.now()});
+  await h.runner.emit({type:"tool_execution_start",toolCallId:"runtime",toolName:"bash",args:{command:"npm test"}});
+  await h.runner.emit({type:"tool_execution_update",toolCallId:"runtime",toolName:"bash",args:{command:"npm test"},partialResult:{content:[{type:"text",text:"retrying"}]}});
+  await h.runner.emit({type:"tool_execution_end",toolCallId:"runtime",toolName:"bash",result:{content:[]},isError:true});
+  await h.runner.emit({type:"agent_end",messages:[]});
+  assert.deepEqual(seen,stages);
+  assert.equal(h.notices.length,5);
+  assert.equal(h.messages.length,0, "runtime findings must not steer or restart agent");
+  assert.deepEqual(h.errors,[]);
+});
+
+test("runtime progress is throttled, capped and deduplicated per tool call", async (t) => {
+  t.mock.timers.enable({apis:["Date"],now:10000});
+  let calls=0;
+  const h=await harness({ui:true,settings:parseSettings({version:1,rules:[{id:"progress",when:"tool_execution_update",question:"Is the tool stuck?",action:"warn",message:"Review progress"}]}),judge:{evaluate:async()=>{calls++;return {progress:1};}}});
+  h.notices.length = 0;
+  const event={type:"tool_execution_update" as const,toolCallId:"p",toolName:"bash",args:{command:"npm test"},partialResult:{content:[{type:"text",text:"retrying"}]}};
+  await h.runner.emit(event);
+  await h.runner.emit(event);
+  assert.equal(calls,1);
+  for(let i=0;i<4;i++){t.mock.timers.tick(2000);await h.runner.emit(event);}
+  assert.equal(calls,3);
+  assert.equal(h.notices.length,1);
+  await h.runner.emit({...event,toolCallId:"another"});
+  assert.equal(calls,4);
+  assert.equal(h.notices.length,2);
+  assert.deepEqual(h.errors,[]);
+});
+
+test("runtime checks are opt-in and do not notify after shutdown", async () => {
+  let calls=0;
+  const h=await harness({judge:{evaluate:async()=>{calls++;return {};}}});
+  await h.runner.emit({type:"agent_end",messages:[]});
+  assert.equal(calls,0);
+  let entered!:()=>void, finish!:(value:Record<string,number>)=>void;
+  const ready=new Promise<void>(resolve=>{entered=resolve;});
+  const pending=new Promise<Record<string,number>>(resolve=>{finish=resolve;});
+  const live=await harness({ui:true,settings:parseSettings({version:1,rules:[{id:"ending",when:"agent_end",question:"Needs review?",action:"warn",message:"Review"}]}),judge:{evaluate:async()=>{entered();return pending;}}});
+  live.notices.length = 0;
+  const emitted=live.runner.emit({type:"agent_end",messages:[]});
+  await ready;
+  await live.runner.emit({type:"session_shutdown",reason:"quit"});
+  finish({ending:1});await emitted;
+  assert.deepEqual(live.notices,[]);
+  assert.deepEqual(live.errors,[]);
+});

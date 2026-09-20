@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "runtime-retries",
+      "when": "tool_execution_update",
+      "match": { "tools": ["bash"] },
+      "question": "Does the partial tool output show repeated failures without meaningful progress? A single transient retry or normal progress is not enough.",
+      "threshold": 0.9,
+      "action": "warn",
+      "onError": "warn",
+      "message": "工具可能正在无效重试，请检查进度并决定是否停止。"
+    }
+  ]
+}

@@ -183,3 +183,12 @@ test("settings round trip without losing custom rules; malformed saved JSON is r
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runtime notification stages reject blocking and hiding", () => {
+  for(const when of ["turn_start","tool_execution_start","tool_execution_update","tool_execution_end","agent_end"]){
+    for(const action of ["block","confirm","hide"]){
+      assert.throws(()=>parseSettings({version:1,rules:[{id:"runtime",when,action,message:"Review"}]}));
+    }
+    assert.equal(parseSettings({version:1,rules:[{id:"runtime",when,match:{contains:"test"},action:"warn",message:"Review"}]}).rules[0].when,when);
+  }
+});

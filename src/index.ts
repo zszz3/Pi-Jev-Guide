@@ -29,7 +29,7 @@ import {
   type Settings,
   type Stage,
 } from "./settings.ts";
-import { evaluateRules, type Finding, type GuardEvent } from "./engine.ts";
+import { evaluateRules, matches, type Finding, type GuardEvent } from "./engine.ts";
 
 const stateType = "jev-guard-state-v1";
 const messageType = "jev-guard";
@@ -91,6 +91,9 @@ export function installGuard(
   let checks = 0;
   let blocks = 0;
   let masks = 0;
+  const progressChecks = new Map<string, { at: number; count: number }>();
+  let runtimeBusy = false;
+  const runtimeNotices = new Set<string>();
 
   const save = () => pi.appendEntry(stateType, tracker.snapshot());
   const status = (ctx: ExtensionContext, last = "就绪") => {
@@ -177,6 +180,8 @@ export function installGuard(
     outputErrorNotified = false;
     checks = blocks = masks = 0;
     trace.length = 0;
+    progressChecks.clear();
+    runtimeNotices.clear();
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "custom" && entry.customType === stateType)
         tracker.restore(entry.data);
@@ -259,6 +264,60 @@ export function installGuard(
       (file) => file.path,
     );
   });
+
+  // Notification events cannot veto an action. Never turn a runtime warning into
+  // a steering message: doing so at agent_end can accidentally start another run.
+  const runtimeCheck = async (event: GuardEvent, ctx: ExtensionContext, callId?: string) => {
+    if (settingsError || runtimeBusy || !settings.rules.some((rule) => matches(rule, event))) return;
+    const currentEpoch = epoch;
+    const signal = AbortSignal.any(ctx.signal ? [ctx.signal, lifetime.signal] : [lifetime.signal]);
+    if (signal.aborted) return;
+    if (event.when === "tool_execution_update" && callId) {
+      const previous = progressChecks.get(callId);
+      const now = Date.now();
+      if (previous && (previous.count >= 3 || now - previous.at < 2000)) return;
+      progressChecks.set(callId, { at: now, count: (previous?.count ?? 0) + 1 });
+    }
+    runtimeBusy = true;
+    try {
+      const findings = await custom(event, signal);
+      if (signal.aborted || currentEpoch !== epoch) return;
+      for (const finding of findings) {
+        const id = `${event.when}:${callId ?? "run"}:${finding.id}`;
+        if (runtimeNotices.has(id) || runtimeNotices.size >= 20) continue;
+        runtimeNotices.add(id);
+        record(ctx, `${finding.id}: warn${finding.unavailable ? " (unavailable)" : ""}`);
+        report(ctx, `Jev Guard · ${event.when} · ${finding.id}: ${finding.message}`);
+      }
+    } catch {
+      if (!signal.aborted && currentEpoch === epoch) record(ctx, `${event.when}: 运行时检查未完成`);
+    } finally {
+      runtimeBusy = false;
+    }
+  };
+  const runtimeText = (value: unknown) => bounded(JSON.stringify(redactValue(value, knownSecrets)) ?? "", 8000);
+  pi.on("agent_start", () => {
+    progressChecks.clear();
+    runtimeNotices.clear();
+  });
+  pi.on("turn_start", (event, ctx) => runtimeCheck({
+    when: "turn_start", cwd: ctx.cwd, task, text: runtimeText({ turnIndex: event.turnIndex, task, verification: tracker.snapshot() }),
+  }, ctx));
+  pi.on("tool_execution_start", (event, ctx) => runtimeCheck({
+    when: "tool_execution_start", cwd: ctx.cwd, task, tool: event.toolName, input: event.args, text: runtimeText(event.args),
+  }, ctx, event.toolCallId));
+  pi.on("tool_execution_update", (event, ctx) => runtimeCheck({
+    when: "tool_execution_update", cwd: ctx.cwd, task, tool: event.toolName, input: event.args, text: runtimeText(event.partialResult),
+  }, ctx, event.toolCallId));
+  pi.on("tool_execution_end", async (event, ctx) => {
+    try {
+      await runtimeCheck({ when: "tool_execution_end", cwd: ctx.cwd, task, tool: event.toolName,
+        text: runtimeText({ result: event.result, isError: event.isError }) }, ctx, event.toolCallId);
+    } finally { progressChecks.delete(event.toolCallId); }
+  });
+  pi.on("agent_end", (event, ctx) => runtimeCheck({
+    when: "agent_end", cwd: ctx.cwd, task, text: runtimeText({ messages: event.messages, verification: tracker.snapshot() }),
+  }, ctx));
 
   pi.on("tool_call", async (event, ctx) => {
     try {
@@ -702,6 +761,11 @@ export function installGuard(
               "tool_call · 工具执行前",
               "tool_result · 工具返回后",
               "turn_end · 本轮回答结束时",
+              "turn_start · 每轮开始时",
+              "tool_execution_start · 工具开始运行时",
+              "tool_execution_update · 工具运行中的进度输出",
+              "tool_execution_end · 工具运行结束时",
+              "agent_end · 整次 Agent 运行结束时",
             ];
             const stageChoice = await ctx.ui.select("什么时候检查？", labels);
             if (!stageChoice) return;
