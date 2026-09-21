@@ -1,3 +1,4 @@
+import { defaultRecovery, type RecoverySettings } from "./recovery.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -54,12 +55,14 @@ export interface Rule {
 }
 export interface Settings {
   version: 1;
+  recovery: RecoverySettings;
   builtins: Record<BuiltinId, boolean>;
   rules: Rule[];
 }
 export function defaultSettings(): Settings {
   return {
     version: 1,
+    recovery: defaultRecovery(),
     builtins: Object.fromEntries(
       Object.keys(builtinGuards).map((id) => [id, true]),
     ) as Settings["builtins"],
@@ -84,9 +87,22 @@ function string(value: unknown, label: string, max = 2000): string {
 /** Validate the whole document before replacing live settings; never silently drop a rule. */
 export function parseSettings(value: unknown): Settings {
   const raw = object(value, "config");
-  keys(raw, ["version", "builtins", "rules"], "config");
+  keys(raw, ["version", "builtins", "rules", "recovery"], "config");
   if (raw.version !== 1) throw new Error("config.version must be 1");
   const result = defaultSettings();
+  if (raw.recovery !== undefined) {
+    const r = object(raw.recovery, "recovery");
+    keys(r, ["enabled", "graceMs", "cooldownMs", "maxConsecutive"], "recovery");
+    if (r.enabled !== undefined && typeof r.enabled !== "boolean") throw new Error("recovery.enabled must be boolean");
+    if (r.enabled !== undefined) result.recovery.enabled = r.enabled as boolean;
+    for (const [key, min, max] of [["graceMs", 1000, 60000], ["cooldownMs", 1000, 300000], ["maxConsecutive", 1, 5]] as const) {
+      if (r[key] !== undefined) {
+        const value = r[key];
+        if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) throw new Error(`Invalid recovery.${key}`);
+        result.recovery[key] = value;
+      }
+    }
+  }
   if (raw.builtins !== undefined) {
     const builtins = object(raw.builtins, "builtins");
     keys(builtins, Object.keys(builtinGuards), "builtins");

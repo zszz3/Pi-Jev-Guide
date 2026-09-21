@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-09-21T14:48:31.426Z",
+  "note": "Initial compound prompt rejected a benign continuation; simplified into unfinished-work and explicit-user-dependency judgments. No continuation was sent.",
+  "result": {
+    "name": "settled technical interruption is approved by real Jev and dispatched once",
+    "pass": false,
+    "ms": 4506,
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n0 !== 1\n",
+    "apiCalls": [
+      {
+        "questions": [
+          "can_continue",
+          "needs_user"
+        ],
+        "ms": 1666,
+        "scores": {
+          "can_continue": 0.68,
+          "needs_user": 0.38
+        }
+      }
+    ]
+  }
+}

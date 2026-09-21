@@ -42,6 +42,8 @@ async function harness(
   const runtime = createExtensionRuntime();
   const sessions = SessionManager.inMemory("/tmp/jev-guard-test-project");
   const messages: string[] = [];
+  const continuations: string[] = [];
+  runtime.sendUserMessage = (content) => { continuations.push(String(content)); };
   const notices: string[] = [];
   let confirmations = 0;
   runtime.appendEntry = (type, data) => {
@@ -97,6 +99,7 @@ async function harness(
     runtime,
     sessions,
     messages,
+    continuations,
     notices,
     errors,
     confirmations: () => confirmations,
@@ -835,4 +838,33 @@ test("runtime checks are opt-in and do not notify after shutdown", async () => {
   finish({ending:1});await emitted;
   assert.deepEqual(live.notices,[]);
   assert.deepEqual(live.errors,[]);
+});
+
+
+test("auto recovery waits for settled, triggers a real Pi user-message dispatch and can be paused", async t => {
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const h=await harness({ui:true,settings:parseSettings({version:1,recovery:{enabled:true,graceMs:1000}}),judge:{evaluate:async()=>({can_continue:0.99,needs_user:0.01})}});
+  const message={role:"assistant" as const,content:[{type:"text" as const,text:"Network interrupted"}],api:"openai-completions" as const,provider:"test",model:"test",stopReason:"error" as const,errorMessage:"503 service unavailable",timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+  const flush=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
+  await h.runner.emitInput("Run the local tests",undefined,"interactive");
+  await h.runner.emit({type:"agent_start"});
+  await h.runner.emit({type:"agent_end",messages:[message]});
+  t.mock.timers.tick(10000);await flush();assert.equal(h.continuations.length,0);
+  await h.runner.emit({type:"agent_settled"});
+  t.mock.timers.tick(1000);await flush();assert.equal(h.continuations.length,1);
+  await h.runner.emit({type:"agent_start"});
+  await h.runner.emit({type:"agent_end",messages:[message]});
+  await h.runner.emit({type:"agent_settled"});
+  await h.command("recovery pause");t.mock.timers.tick(30000);await flush();assert.equal(h.continuations.length,1);
+  await h.command("recovery on");
+  await h.runner.emit({type:"agent_start"});
+  await h.runner.emit({type:"agent_end",messages:[{...message,stopReason:"aborted"}]});
+  await h.runner.emit({type:"agent_settled"});t.mock.timers.tick(30000);await flush();assert.equal(h.continuations.length,1);
+  await h.runner.emitInput("Inspect only",undefined,"interactive");
+  await h.runner.emit({type:"agent_start"});
+  assert.equal((await h.runner.emitToolCall(call("denied-recovery","rm -rf /tmp/example")))?.block,true);
+  await h.runner.emit({type:"agent_end",messages:[message]});
+  await h.runner.emit({type:"agent_settled"});t.mock.timers.tick(30000);await flush();assert.equal(h.continuations.length,1);
+  assert.deepEqual(h.errors,[]);
+  await h.runner.emit({type:"session_shutdown",reason:"quit"});
 });

@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-09-21T14:49:33.552Z",
+  "model": "jev-latest",
+  "defaultTimeoutMs": 2500,
+  "scope": "Real Pi ExtensionRunner + real Jev; UI responses simulated; no proposed command executed; temporary login store removed",
+  "results": [
+    {
+      "name": "real login validates and persists key",
+      "pass": false,
+      "ms": 2512,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- '[REDACTED]'\n",
+      "apiCalls": [
+        {
+          "questions": [
+            "connection"
+          ],
+          "ms": 2508,
+          "error": "live request failed"
+        }
+      ]
+    }
+  ]
+}

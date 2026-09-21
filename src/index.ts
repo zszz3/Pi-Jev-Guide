@@ -1,3 +1,4 @@
+import { Recovery, type RecoveryCandidate } from "./recovery.ts";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -126,6 +127,25 @@ export function installGuard(
     else
       pi.sendMessage({ customType: messageType, content: safe, display: true });
   };
+  let recoveryContext: ExtensionContext | undefined;
+  let recoveryCandidate: RecoveryCandidate | undefined;
+  let recoveryBlocked = false;
+  let recoveryPrompt: string | undefined;
+  let lastRecoveryTool: RecoveryCandidate["lastTool"];
+  const recovery = new Recovery({
+    settings: () => settings.recovery,
+    // Recovery runs while idle, so allow a longer bounded check than tool interception.
+    judge: () => !judge ? undefined : config.apiKey
+      ? judgeFactory({ ...config, timeoutMs: Math.max(config.timeoutMs, 10000) })
+      : judge,
+    allowed: () => !settingsError && !recoveryBlocked && config.mode === "guard" && !lifetime.signal.aborted && !recoveryContext?.signal?.aborted,
+    idle: () => recoveryContext?.isIdle() ?? false,
+    pending: () => recoveryContext?.hasPendingMessages() ?? true,
+    secrets: () => knownSecrets,
+    send: (text) => { recoveryPrompt = text; pi.sendUserMessage(text, { deliverAs: "followUp" }); },
+    notice: (text) => { if (recoveryContext) report(recoveryContext, text); },
+    persist: (attempts) => pi.appendEntry("jev-guard-recovery-v1", { attempts }),
+  });
   const custom = (event: GuardEvent, signal?: AbortSignal) =>
     evaluateRules(settings.rules, event, judge, knownSecrets, signal);
   const applyFindings = async (
@@ -170,6 +190,13 @@ export function installGuard(
     return false;
   };
   const restore = (ctx: ExtensionContext) => {
+    recovery.cancel();
+    recoveryCandidate = undefined;
+    recoveryPrompt = undefined;
+    lastRecoveryTool = undefined;
+    recoveryBlocked = false;
+    recoveryContext = ctx;
+    recovery.restore(0);
     epoch++;
     lifetime.abort();
     lifetime = new AbortController();
@@ -183,17 +210,20 @@ export function installGuard(
     progressChecks.clear();
     runtimeNotices.clear();
     for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === "custom" && entry.customType === "jev-guard-recovery-v1")
+        recovery.restore((entry.data as { attempts?: number })?.attempts ?? 0);
       if (entry.type === "custom" && entry.customType === stateType)
         tracker.restore(entry.data);
       if (entry.type === "message" && entry.message.role === "user") {
         const content = entry.message.content;
-        task =
+        const restoredTask =
           typeof content === "string"
             ? content
             : content
                 .filter((item) => item.type === "text")
                 .map((item) => item.text)
                 .join("\n");
+        if (!restoredTask.startsWith("[Jev Guard 自动续跑 ")) task = restoredTask;
       }
     }
     status(ctx);
@@ -219,11 +249,17 @@ export function installGuard(
       );
   });
   pi.on("session_tree", (_event, ctx) => restore(ctx));
+  pi.on("session_before_switch", () => { recovery.cancel(); recoveryCandidate = undefined; });
+  pi.on("session_before_fork", () => { recovery.cancel(); recoveryCandidate = undefined; });
+  pi.on("session_before_tree", () => { recovery.cancel(); recoveryCandidate = undefined; });
   pi.on("session_shutdown", () => {
+    recovery.cancel(); recoveryCandidate = undefined;
     epoch++;
     lifetime.abort();
   });
   pi.on("input", async (event, ctx) => {
+    if (event.source !== "extension") { recovery.reset(); recoveryCandidate = undefined; recoveryPrompt = undefined; }
+
     if (settingsError) {
       report(ctx, "Jev Guard 配置无效；请先 /jevguard config。");
       return { action: "handled" };
@@ -259,7 +295,8 @@ export function installGuard(
     }
   });
   pi.on("before_agent_start", (event) => {
-    task = event.prompt;
+    if (event.prompt !== recoveryPrompt) task = event.prompt;
+    recoveryPrompt = undefined;
     loadedRules = (event.systemPromptOptions.contextFiles ?? []).map(
       (file) => file.path,
     );
@@ -297,6 +334,10 @@ export function installGuard(
   };
   const runtimeText = (value: unknown) => bounded(JSON.stringify(redactValue(value, knownSecrets)) ?? "", 8000);
   pi.on("agent_start", () => {
+    recovery.cancel();
+    recoveryCandidate = undefined;
+    recoveryBlocked = false;
+    lastRecoveryTool = undefined;
     progressChecks.clear();
     runtimeNotices.clear();
   });
@@ -319,10 +360,35 @@ export function installGuard(
     when: "agent_end", cwd: ctx.cwd, task, text: runtimeText({ messages: event.messages, verification: tracker.snapshot() }),
   }, ctx));
 
+  pi.on("tool_execution_start", (event) => {
+    lastRecoveryTool = { name: event.toolName, status: "pending" };
+  });
+  pi.on("tool_execution_end", (event) => {
+    lastRecoveryTool = { name: event.toolName, status: event.isError ? "failed" : "done" };
+  });
+  pi.on("agent_end", (event, ctx) => {
+    recoveryContext = ctx;
+    const last = [...event.messages].reverse().find(message => message.role === "assistant");
+    if (!last || last.role !== "assistant") { recoveryCandidate = undefined; return; }
+    if (last.stopReason === "aborted") { recovery.cancel(); recoveryCandidate = undefined; return; }
+    recoveryCandidate = { stopReason: last.stopReason, error: last.errorMessage ?? "", task,
+      lastText: last.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+      lastTool: lastRecoveryTool };
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    recoveryContext = ctx;
+    const candidate = recoveryCandidate;
+    recoveryCandidate = undefined;
+    if (candidate) recovery.schedule(candidate);
+  });
+
+  const denyRecovery = <T extends { block: true }>(verdict: T): T => {
+    recoveryBlocked = true; recovery.cancel(); return verdict;
+  };
   pi.on("tool_call", async (event, ctx) => {
     try {
       if (settingsError)
-        return { block: true, reason: "Jev Guard 配置无效，请先修复配置。" };
+        return denyRecovery({ block: true, reason: "Jev Guard 配置无效，请先修复配置。" });
       const currentEpoch = epoch;
       const signal = AbortSignal.any(
         ctx.signal ? [ctx.signal, lifetime.signal] : [lifetime.signal],
@@ -371,13 +437,13 @@ export function installGuard(
           enabled("local-risk"),
         );
       } catch {
-        return {
+        return denyRecovery({
           block: true,
           reason: "Jev Guard 检查已取消或未能完成；本次调用没有执行。",
-        };
+        });
       }
       if (signal.aborted || currentEpoch !== epoch)
-        return { block: true, reason: "会话已切换或操作已取消。" };
+        return denyRecovery({ block: true, reason: "会话已切换或操作已取消。" });
       if (decision.kind !== "block") {
         const findings = await custom(
           {
@@ -400,13 +466,13 @@ export function installGuard(
           )
         ) {
           blocks++;
-          return {
+          return denyRecovery({
             block: true,
             reason: redact(
               `Jev Guard: ${findings.map((f) => f.message).join("\n") || "检查取消"}`,
               knownSecrets,
             ),
-          };
+          });
         }
       }
       checks++;
@@ -416,10 +482,10 @@ export function installGuard(
           ctx.ui.notify(`[仅观察，未阻止] ${decision.reason}`, "warning");
       } else if (decision.kind === "block") {
         blocks++;
-        return {
+        return denyRecovery({
           block: true,
           reason: `Jev Guard: ${decision.reason} 不要原样重试。`,
-        };
+        });
       } else if (decision.kind === "confirm") {
         // Approval is bound to this call, never cached or inferred from model output.
         const preview = bounded(
@@ -434,11 +500,11 @@ export function installGuard(
           ));
         if (!accepted || signal.aborted || currentEpoch !== epoch) {
           blocks++;
-          return {
+          return denyRecovery({
             block: true,
             reason:
               "Jev Guard: 此次操作未获确认。请采用其他方案，或说明需要用户采取的操作；不要原样重试。",
-          };
+          });
         }
       } else if (decision.kind === "warn") {
         coach(`Jev Guard 提醒：${decision.reason}`);
@@ -447,10 +513,10 @@ export function installGuard(
       save();
     } catch {
       // Pi treats thrown hook errors as non-blocking; explicitly deny this call instead.
-      return {
+      return denyRecovery({
         block: true,
         reason: "Jev Guard 检查或确认流程异常，此次操作未执行。",
-      };
+      });
     }
   });
 
@@ -627,9 +693,26 @@ export function installGuard(
 
   pi.registerCommand("jevguard", {
     description:
-      "Jev Guard: login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
+      "Jev Guard: recovery on|pause|status | login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
     handler: async (args, ctx) => {
       const input = args.trim();
+      if (input.startsWith("recovery")) {
+        const action = input.split(/\s+/)[1] ?? "status";
+        recoveryContext = ctx;
+        if (["on", "off", "pause", "resume"].includes(action)) {
+          recovery.cancel();
+          const next = parseSettings({ ...settings, recovery: { ...settings.recovery, enabled: action === "on" || action === "resume" } });
+          try {
+            if (options.settingsPath) saveSettings(options.settingsPath, next);
+            settings = next;
+          } catch { report(ctx, "自动续跑配置未保存，待执行的续跑已取消。"); return; }
+        } else if (action !== "status") {
+          report(ctx, "用法：/jevguard recovery on|off|pause|resume|status"); return;
+        }
+        report(ctx, `自动续跑：${settings.recovery.enabled ? "开启" : "关闭"}；已续跑 ${recovery.attempts}/${settings.recovery.maxConsecutive} 次；${recovery.scheduled ? "等待检查" : "无等待任务"}。仅恢复之后发生的技术中断，不追溯恢复旧任务。`);
+        return;
+      }
+
       if (/^(login|logout)(?:\s|$)/.test(input)) {
         if (input !== "login" && input !== "logout") {
           report(
@@ -653,6 +736,7 @@ export function installGuard(
           );
           return;
         }
+        recovery.cancel();
         authBusy = true;
         const currentEpoch = epoch;
         const signal = lifetime.signal;
@@ -838,6 +922,7 @@ export function installGuard(
             }
             saveSettings(options.settingsPath, next);
           }
+          recovery.cancel();
           settings = next;
           settingsError = false;
           report(ctx, `规则已生效：${options.settingsPath}`);
@@ -850,6 +935,7 @@ export function installGuard(
         return;
       }
       if (input === "mode guard" || input === "mode observe") {
+        recovery.cancel();
         config.mode = input === "mode guard" ? "guard" : "observe";
         status(ctx);
         ctx.ui.notify(

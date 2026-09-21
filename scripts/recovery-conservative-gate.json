@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-09-21T14:51:18.248Z",
+  "model": "jev-latest",
+  "defaultTimeoutMs": 2500,
+  "scope": "Real Pi ExtensionRunner + real Jev; UI responses simulated; no proposed command executed; temporary login store removed",
+  "results": [
+    {
+      "name": "real login validates and persists key",
+      "pass": true,
+      "ms": 1727,
+      "apiCalls": [
+        {
+          "questions": [
+            "connection"
+          ],
+          "ms": 1725,
+          "scores": {
+            "connection": 0.95
+          }
+        }
+      ]
+    },
+    {
+      "name": "settled technical interruption is approved by real Jev and dispatched once",
+      "pass": false,
+      "ms": 11503,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n0 !== 1\n",
+      "apiCalls": [
+        {
+          "questions": [
+            "can_continue",
+            "needs_user"
+          ],
+          "ms": 3779,
+          "scores": {
+            "can_continue": 0.95,
+            "needs_user": 0.15
+          }
+        }
+      ]
+    },
+    {
+      "name": "user approval dependency prevents live automatic recovery",
+      "pass": true,
+      "ms": 11502,
+      "apiCalls": [
+        {
+          "questions": [
+            "can_continue",
+            "needs_user"
+          ],
+          "ms": 1908,
+          "scores": {
+            "can_continue": 0.17,
+            "needs_user": 0.92
+          }
+        }
+      ]
+    },
+    {
+      "name": "no hook errors or credential disclosure",
+      "pass": true,
+      "ms": 2,
+      "apiCalls": []
+    }
+  ]
+}

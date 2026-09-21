@@ -202,3 +202,28 @@ src/engine.ts   不依赖 Pi 的匹配与语义规则执行器
 接口依据：[Pi 扩展文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)、[TypeSafe SDK](https://github.com/typesafe-ai/typesafe-sdk-js)。
 
 结构与同类源码对比见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+
+## 异常停止后自动续跑
+
+默认关闭，在 Pi 中运行 `/jevguard recovery on` 开启。`/jevguard recovery pause` 立即取消待执行检查并关闭；`resume` 重新开启，`status` 查看状态。设置会保存到插件配置文件，不自动补跑此前已停止的任务。
+
+插件等待 Pi 的 `agent_settled`（内置重试、压缩和排队续跑结束），仅考虑明确的网络、超时、临时服务错误或输出长度上限。首次等待 3 秒，之后按 20、40 秒退避；每次用户任务最多自动续跑 3 次（配置上限 5 次）。次数写入会话，重新加载不会清零；新的用户输入才重置。
+
+Jev 同时判断“现有授权内是否有明确下一步”和“是否必须等待用户”。前者至少 0.9、后者不超过 0.2 才发出续跑消息。这些是初始阈值，仅做了少量真实样例验证，不是准确率保证。续跑检查使用独立的至少 10 秒超时预算，工具拦截仍用原配置。API 超时、检查失败或不确定时保持停止。用户取消、正常完成、权限／凭据／余额／上下文错误、Guard 已拦截的动作不续跑。宿主重新开始、新用户输入、会话切换或关闭会取消等待；有排队消息时不插队。等待期间请用 `recovery pause` 取消，不依赖空闲状态下的 Esc。
+
+续跑消息会要求先检查上次工具是否已执行，不盲目重放可能有副作用的操作。这是给 Agent 的指令，不是外部操作的事务或幂等保证。此版本不主动打断运行中的循环，也不在进程重启时扫描旧任务。
+
+```json
+{
+  "version": 1,
+  "recovery": {
+    "enabled": true,
+    "graceMs": 3000,
+    "cooldownMs": 20000,
+    "maxConsecutive": 3
+  }
+}
+```
+
+该功能参考 [dsh-auto-continue](https://github.com/HsiangNianian/dsh-auto-continue) 的有限重试、退避和工具状态核对设计，按 Pi 的生命周期独立实现。

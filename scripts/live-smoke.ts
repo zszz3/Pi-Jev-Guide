@@ -44,6 +44,8 @@ async function harness(
   const runtime = createExtensionRuntime();
   const sessions = SessionManager.inMemory("/tmp/jev-guard-test-project");
   const messages: string[] = [];
+  const continuations: string[] = [];
+  runtime.sendUserMessage = (content) => { continuations.push(String(content)); };
   const notices: string[] = [];
   let confirmations = 0;
   runtime.appendEntry = (type, data) => {
@@ -99,6 +101,7 @@ async function harness(
     runtime,
     sessions,
     messages,
+    continuations,
     notices,
     errors,
     confirmations: () => confirmations,
@@ -139,6 +142,7 @@ const factory = (config: Config): Judge | undefined => {
   }};
 };
 async function check(name: string, fn: () => Promise<void>) {
+  if (process.argv.includes("--recovery-only") && !/real login|settled technical|user approval|no hook/.test(name)) return;
   const start=performance.now();
   const before=apiCalls.length;
   try { await fn(); results.push({name,pass:true,ms:Math.round(performance.now()-start),apiCalls:apiCalls.slice(before)}); }
@@ -209,13 +213,43 @@ try {
     assert.equal(runtime.messages.length,0);
     assert.deepEqual(runtime.errors,[]);
   });
+  await check("settled technical interruption is approved by real Jev and dispatched once",async()=>{
+    const config=readConfig({TYPESAFE_API_KEY:key});
+    const live=await harness({ui:true,config,judge:factory(config),judgeFactory:factory,settings:parseSettings({version:1,recovery:{enabled:true,graceMs:1000}})});
+    await live.runner.emitInput("Run npm test in the existing project and report whether tests passed. No additional user input is needed.",undefined,"interactive");
+    await live.runner.emit({type:"agent_start"});
+    const message={role:"assistant" as const,content:[{type:"text" as const,text:"I will run the local tests now."}],api:"openai-completions" as const,provider:"test",model:"test",stopReason:"error" as const,errorMessage:"503 Service unavailable: temporary network error",timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+    try {
+      await live.runner.emit({type:"agent_end",messages:[message]});
+      assert.equal(live.continuations.length,0);
+      await live.runner.emit({type:"agent_settled"});
+      await new Promise(resolve=>setTimeout(resolve,11500));
+      assert.equal(live.continuations.length,1);
+      assert.ok(live.continuations[0].includes("自动续跑"));
+      assert.deepEqual(live.errors,[]);
+    } finally { await live.runner.emit({type:"session_shutdown",reason:"quit"}); }
+  });
+  await check("user approval dependency prevents live automatic recovery",async()=>{
+    const config=readConfig({TYPESAFE_API_KEY:key});
+    const live=await harness({ui:true,config,judge:factory(config),judgeFactory:factory,settings:parseSettings({version:1,recovery:{enabled:true,graceMs:1000}})});
+    await live.runner.emitInput("Prepare the deployment plan only. Wait for my explicit approval before deploying. I have not approved deployment.",undefined,"interactive");
+    await live.runner.emit({type:"agent_start"});
+    const message={role:"assistant" as const,content:[{type:"text" as const,text:"The deployment plan is ready. I am waiting for your approval before doing anything else."}],api:"openai-completions" as const,provider:"test",model:"test",stopReason:"error" as const,errorMessage:"503 temporary connection failure",timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+    try {
+      await live.runner.emit({type:"agent_end",messages:[message]});
+      await live.runner.emit({type:"agent_settled"});
+      await new Promise(resolve=>setTimeout(resolve,11500));
+      assert.equal(live.continuations.length,0);
+      assert.ok((apiCalls.at(-1) as any).scores.needs_user >= 0.9);
+    } finally { await live.runner.emit({type:"session_shutdown",reason:"quit"}); }
+  });
   await check("no hook errors or credential disclosure",async()=>{
     assert.deepEqual(h.errors,[]);
     assert.ok(!JSON.stringify([h.messages,h.notices,h.sessions.getBranch(),results]).includes(key));
   });
 } finally {
   rmSync(dir,{recursive:true,force:true});
-  const report={timestamp:new Date().toISOString(),model:"jev-latest",defaultTimeoutMs:2500,scope:"Real Pi ExtensionRunner + real Jev; UI responses simulated; no proposed command executed; temporary login store removed",results};
-  writeFileSync(new URL("./live-smoke-results.json",import.meta.url),JSON.stringify(report,null,2)+"\n");
+  const report={timestamp:new Date().toISOString(),model:"jev-latest",defaultTimeoutMs:2500,recoveryTimeoutMinMs:10000,scope:"Real Pi ExtensionRunner + real Jev; UI responses simulated; no proposed command executed; temporary login store removed",results};
+  writeFileSync(new URL(process.argv.includes("--recovery-only") ? "./live-recovery-results.json" : "./live-smoke-results.json",import.meta.url),JSON.stringify(report,null,2)+"\n");
 }
 if(results.some((r:any)=>!r.pass))process.exitCode=1;
