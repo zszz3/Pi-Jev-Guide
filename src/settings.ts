@@ -28,6 +28,7 @@ export const capabilities: Record<Stage, readonly RuleAction[]> = {
   agent_end: ["warn"],
 };
 export const builtinGuards = {
+  "task-frame": { when: "input", description: "Jev 识别任务变化并保留约束原话" },
   "local-risk": {
     when: "tool_call",
     description: "本地危险命令和凭据路径检查",

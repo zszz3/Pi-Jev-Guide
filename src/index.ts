@@ -1,3 +1,4 @@
+import { emptyFrame, frameContext, restoreFrame, updateFrame } from "./frame.ts";
 import { Recovery, type RecoveryCandidate } from "./recovery.ts";
 import type {
   ExtensionAPI,
@@ -77,6 +78,8 @@ export function installGuard(
   const enabled = (id: BuiltinId) => settings.builtins[id];
   let tracker = new Tracker();
   let task = "";
+  let frame = emptyFrame();
+  let frameRevision = 0;
   let loadedRules: string[] = [];
   let coaching = 0;
   let outputErrorNotified = false;
@@ -138,7 +141,7 @@ export function installGuard(
     judge: () => !judge ? undefined : config.apiKey
       ? judgeFactory({ ...config, timeoutMs: Math.max(config.timeoutMs, 10000) })
       : judge,
-    allowed: () => !settingsError && !recoveryBlocked && config.mode === "guard" && !lifetime.signal.aborted && !recoveryContext?.signal?.aborted,
+    allowed: () => !settingsError && !recoveryBlocked && (!enabled("task-frame") || !frame.pending) && config.mode === "guard" && !lifetime.signal.aborted && !recoveryContext?.signal?.aborted,
     idle: () => recoveryContext?.isIdle() ?? false,
     pending: () => recoveryContext?.hasPendingMessages() ?? true,
     secrets: () => knownSecrets,
@@ -202,6 +205,7 @@ export function installGuard(
     lifetime = new AbortController();
     tracker = new Tracker();
     task = "";
+    frame = emptyFrame(); frameRevision++;
     loadedRules = [];
     coaching = 0;
     outputErrorNotified = false;
@@ -210,6 +214,9 @@ export function installGuard(
     progressChecks.clear();
     runtimeNotices.clear();
     for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === "custom" && entry.customType === "jev-guard-task-frame-v1") {
+        const saved = restoreFrame(entry.data); if (saved) frame = saved;
+      }
       if (entry.type === "custom" && entry.customType === "jev-guard-recovery-v1")
         recovery.restore((entry.data as { attempts?: number })?.attempts ?? 0);
       if (entry.type === "custom" && entry.customType === stateType)
@@ -226,6 +233,7 @@ export function installGuard(
         if (!restoredTask.startsWith("[Jev Guard 自动续跑 ")) task = restoredTask;
       }
     }
+    if (frame.goal && enabled("task-frame")) task = frameContext(frame);
     status(ctx);
   };
   pi.on("session_start", (_event, ctx) => {
@@ -287,15 +295,39 @@ export function installGuard(
       return { action: "handled" };
     }
     if (event.source !== "extension") {
-      task = event.text;
+      if (enabled("task-frame")) {
+        const revision = ++frameRevision;
+        const frameEpoch = epoch;
+        try {
+          const next = await updateFrame(frame, event.text, judge, knownSecrets, lifetime.signal);
+          if (frameEpoch !== epoch || revision !== frameRevision || lifetime.signal.aborted) return { action: "handled" };
+          frame = next;
+          task = frameContext(frame);
+          pi.appendEntry("jev-guard-task-frame-v1", frame);
+          record(ctx, `task.frame: ${frame.lastChange}`);
+          if (frame.pending) report(ctx, "任务变化尚未明确：保留原目标和本次输入，自动续跑暂停。/jevguard frame 查看。");
+        } catch {
+          if (frameEpoch !== epoch || lifetime.signal.aborted) return { action: "handled" };
+          frame.pending = bounded(redact(event.text, knownSecrets), 6000);
+          task = frameContext(frame);
+          report(ctx, "任务记录更新未完成，自动续跑暂停。");
+        }
+      } else task = event.text;
       tracker.newRequest();
       coaching = 0;
       outputErrorNotified = false;
       save();
     }
   });
+  pi.on("message_end", (event) => {
+    if (!enabled("task-frame") || event.message.role !== "assistant") return;
+    const text = event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+    if (!text) return;
+    frame.recent = [...frame.recent, { role: "assistant" as const, text: bounded(redact(text, knownSecrets), 1200) }].slice(-6);
+    try { pi.appendEntry("jev-guard-task-frame-v1", frame); } catch { /* No user-message mutation on persistence failure. */ }
+  });
   pi.on("before_agent_start", (event) => {
-    if (event.prompt !== recoveryPrompt) task = event.prompt;
+    if (event.prompt !== recoveryPrompt && (!enabled("task-frame") || !frame.goal)) task = event.prompt;
     recoveryPrompt = undefined;
     loadedRules = (event.systemPromptOptions.contextFiles ?? []).map(
       (file) => file.path,
@@ -693,9 +725,15 @@ export function installGuard(
 
   pi.registerCommand("jevguard", {
     description:
-      "Jev Guard: recovery on|pause|status | login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
+      "Jev Guard: frame [reset] | recovery on|pause|status | login | logout | add | rules | config | reload | enable/disable ID | status | trace | mode guard|observe",
     handler: async (args, ctx) => {
       const input = args.trim();
+      if (input === "frame") { report(ctx, JSON.stringify(frame, null, 2)); return; }
+      if (input === "frame reset") {
+        recovery.cancel(); frameRevision++; frame = emptyFrame(); task = "";
+        pi.appendEntry("jev-guard-task-frame-v1", frame);
+        report(ctx, "任务记录已清空，下一条输入将建立新目标。"); return;
+      }
       if (input.startsWith("recovery")) {
         const action = input.split(/\s+/)[1] ?? "status";
         recoveryContext = ctx;
@@ -948,7 +986,7 @@ export function installGuard(
         ctx.ui.notify(trace.join("\n") || "暂无检查记录。", "info");
       } else if (!input || input === "status") {
         ctx.ui.notify(
-          `模式：${config.mode}\nJev：${judge ? config.model : "未配置，仅本地规则"}\nAPI key：${keySource}${authError ? "（保存文件读取失败）" : ""}\n配置：${settingsError ? "无效（暂停输入与动作）" : (options.settingsPath ?? "内存")}\n启用自带检查：${Object.values(settings.builtins).filter(Boolean).length}/6，自定义规则：${settings.rules.filter((r) => r.enabled).length}\n本次加载后检查 ${checks} 次，拦截 ${blocks} 次，脱敏/隐藏 ${masks} 次\n未验证写入：${tracker.revision > tracker.verifiedRevision ? "有" : "无已观察记录"}\n输出语义检查：${judge && config.scanOutput && enabled("semantic-output") ? "开启" : "关闭"}`,
+          `模式：${config.mode}\nJev：${judge ? config.model : "未配置，仅本地规则"}\nAPI key：${keySource}${authError ? "（保存文件读取失败）" : ""}\n配置：${settingsError ? "无效（暂停输入与动作）" : (options.settingsPath ?? "内存")}\n启用自带检查：${Object.values(settings.builtins).filter(Boolean).length}/${Object.keys(settings.builtins).length}，自定义规则：${settings.rules.filter((r) => r.enabled).length}\n本次加载后检查 ${checks} 次，拦截 ${blocks} 次，脱敏/隐藏 ${masks} 次\n未验证写入：${tracker.revision > tracker.verifiedRevision ? "有" : "无已观察记录"}\n输出语义检查：${judge && config.scanOutput && enabled("semantic-output") ? "开启" : "关闭"}`,
           "info",
         );
       } else

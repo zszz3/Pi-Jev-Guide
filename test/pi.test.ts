@@ -868,3 +868,28 @@ test("auto recovery waits for settled, triggers a real Pi user-message dispatch 
   assert.deepEqual(h.errors,[]);
   await h.runner.emit({type:"session_shutdown",reason:"quit"});
 });
+
+test("task frame survives continue, before_agent_start and session restore in Pi", async()=>{
+  let state="";
+  const h=await harness({judge:{evaluate:async text=>{state=text;return {destructive:0,data_leak:0,off_task:0,rule_violation:0};},choose:async text=>{
+    const kind=JSON.parse(text).user_message.includes("不要")?"constraint":"none";
+    return {choice:kind,probabilities:Object.fromEntries(["new_task","constraint","correction","subgoal","none"].map(k=>[k,k===kind?1:0]))};
+  }}});
+  await h.runner.emitInput("增加运行时检查",undefined,"interactive");
+  await h.runner.emitInput("不要新增依赖",undefined,"interactive");
+  await h.runner.emitInput("继续",undefined,"interactive");
+  await h.runner.emitBeforeAgentStart("继续",undefined,"",{contextFiles:[]} as any);
+  await h.runner.emit({type:"session_start",reason:"resume"});
+  await h.runner.emitToolCall(call("framed","npm test"));
+  const task=JSON.parse(state).task;
+  assert.ok(task.includes("增加运行时检查"));
+  assert.ok(task.includes("不要新增依赖"));
+  await h.command("frame");
+  assert.ok(h.messages.at(-1)?.includes('"goal": "增加运行时检查"'));
+  await h.command("frame reset");
+  await h.runner.emitInput("写博客",undefined,"interactive");
+  await h.command("frame");
+  assert.ok(h.messages.at(-1)?.includes('"goal": "写博客"'));
+  assert.ok(!h.messages.at(-1)?.includes("不要新增依赖"));
+  assert.deepEqual(h.errors,[]);
+});

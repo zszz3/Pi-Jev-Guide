@@ -1,0 +1,176 @@
+{
+  "timestamp": "2026-09-24T14:28:35.487Z",
+  "timeoutMs": 10000,
+  "note": "Sequential synthetic Chinese dialogue; live Jev, no commands executed. Runtime input checks use the configured timeout (default 2500ms).",
+  "results": [
+    {
+      "text": "不要新增任何依赖。",
+      "expected": "constraint",
+      "actual": "constraint",
+      "pass": true,
+      "ms": 7815,
+      "probabilities": {
+        "new_task": 0,
+        "constraint": 1,
+        "correction": 0,
+        "subgoal": 0,
+        "none": 0
+      },
+      "goal": "给 Pi-Jev-Guide 增加运行时检查功能，修改代码并验证。",
+      "subgoal": "",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        }
+      ],
+      "pending": ""
+    },
+    {
+      "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+      "expected": "correction",
+      "actual": "correction",
+      "pass": true,
+      "ms": 1203,
+      "probabilities": {
+        "new_task": 0,
+        "constraint": 0.27,
+        "correction": 0.72,
+        "subgoal": 0.01,
+        "none": 0
+      },
+      "goal": "给 Pi-Jev-Guide 增加运行时检查功能，修改代码并验证。",
+      "subgoal": "",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        },
+        {
+          "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+          "turn": 3,
+          "kind": "correction"
+        }
+      ],
+      "pending": ""
+    },
+    {
+      "text": "接下来给刚才的运行时检查补上测试。",
+      "expected": "subgoal",
+      "actual": "subgoal",
+      "pass": true,
+      "ms": 409,
+      "probabilities": {
+        "new_task": 0,
+        "constraint": 0,
+        "correction": 0,
+        "subgoal": 1,
+        "none": 0
+      },
+      "goal": "给 Pi-Jev-Guide 增加运行时检查功能，修改代码并验证。",
+      "subgoal": "接下来给刚才的运行时检查补上测试。",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        },
+        {
+          "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+          "turn": 3,
+          "kind": "correction"
+        }
+      ],
+      "pending": ""
+    },
+    {
+      "text": "好的，继续。",
+      "expected": "none",
+      "actual": "none",
+      "pass": true,
+      "ms": 256,
+      "probabilities": {
+        "new_task": 0,
+        "constraint": 0,
+        "correction": 0,
+        "subgoal": 0.23,
+        "none": 0.77
+      },
+      "goal": "给 Pi-Jev-Guide 增加运行时检查功能，修改代码并验证。",
+      "subgoal": "接下来给刚才的运行时检查补上测试。",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        },
+        {
+          "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+          "turn": 3,
+          "kind": "correction"
+        }
+      ],
+      "pending": ""
+    },
+    {
+      "text": "现在进度怎么样？",
+      "expected": "none",
+      "actual": "none",
+      "pass": true,
+      "ms": 395,
+      "probabilities": {
+        "new_task": 0,
+        "constraint": 0,
+        "correction": 0,
+        "subgoal": 0.01,
+        "none": 0.99
+      },
+      "goal": "给 Pi-Jev-Guide 增加运行时检查功能，修改代码并验证。",
+      "subgoal": "接下来给刚才的运行时检查补上测试。",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        },
+        {
+          "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+          "turn": 3,
+          "kind": "correction"
+        }
+      ],
+      "pending": ""
+    },
+    {
+      "text": "插件先放一边，换个任务，帮我写一篇介绍 Three.js 的博客。",
+      "expected": "new_task",
+      "actual": "new_task",
+      "pass": true,
+      "ms": 269,
+      "probabilities": {
+        "new_task": 0.99,
+        "constraint": 0,
+        "correction": 0,
+        "subgoal": 0,
+        "none": 0.01
+      },
+      "goal": "插件先放一边，换个任务，帮我写一篇介绍 Three.js 的博客。",
+      "subgoal": "",
+      "constraints": [
+        {
+          "text": "不要新增任何依赖。",
+          "turn": 2,
+          "kind": "constraint"
+        },
+        {
+          "text": "不对，不要做桌面界面，我要在 Pi 终端里使用。",
+          "turn": 3,
+          "kind": "correction"
+        }
+      ],
+      "pending": ""
+    }
+  ]
+}

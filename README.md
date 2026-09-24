@@ -162,7 +162,7 @@ API key 通过 `/jevguard login` 保存；模型、超时和自带 Jev 检查的
 - `onError`：无 key、超时、无效响应或上下文超过限制时的动作，必须受该时机能力限制。默认输入／执行前为 `block`，结果为 `hide`，收尾为 `warn`。缺少 key 不会让显式配置的语义规则静默失效。
 - `enabled` 默认 true。ID 唯一，最多 32 条；不支持任意脚本、正则或 shell 回调。
 
-六项自带检查默认开启，可用 `/jevguard rules` 查看并按 ID 开关：`local-risk`、`semantic-action`、`redact-output`、`semantic-output`、`repeated-failure`、`completion-check`。它们有各自固定适用时机，用户自定义规则在支持的四个时机内自由配置。关闭相应检查会移除其保护。
+七项自带检查默认开启，可用 `/jevguard rules` 查看并按 ID 开关：`task-frame`、`local-risk`、`semantic-action`、`redact-output`、`semantic-output`、`repeated-failure`、`completion-check`。它们有各自固定适用时机，用户自定义规则在支持的九个时机内自由配置。关闭相应检查会移除其保护。
 
 ## 数据与行为边界
 
@@ -227,3 +227,17 @@ Jev 同时判断“现有授权内是否有明确下一步”和“是否必须�
 ```
 
 该功能参考 [dsh-auto-continue](https://github.com/HsiangNianian/dsh-auto-continue) 的有限重试、退避和工具状态核对设计，按 Pi 的生命周期独立实现。
+
+## 任务变化识别
+
+`task-frame` 默认开启。首次输入建立目标；后续输入由 Jev 做一个 Choice 判断：新任务、补充约束、纠正、子目标、没有变化。输入包含当前目标、约束和最近六段用户／助手文字，供“继续”“第二个”等短回复参考。首条输入无需 API；后续检查使用 `JEV_GUARD_TIMEOUT_MS`（默认 2.5 秒）。
+
+- `/jevguard frame` 查看目标、当前子目标、约束原话、输入轮次、最近分类和概率。
+- `/jevguard frame reset` 明确清空记录；下一条输入重新建立目标。
+- `/jevguard disable task-frame` 关闭该功能，`enable task-frame` 恢复。
+
+实现直接保存用户原话，不让生成模型改写要求。约束与纠正概率合并达到 0.6 时保留对应原话；其他类别需达到 0.6 才采纳。这是初始阈值，不代表普遍准确率。旧约束不会仅凭一次“新任务”分类自动撤销；确实换到无关任务时可先 `frame reset`，避免旧约束继续适用。
+
+分类不明确、接口失败或输入超限时，保留原目标并记录尚未分类的输入，暂停自动续跑；当前输入仍会交给主 Agent。待分类内容不会被一句“继续”清除，可检查后显式重建任务记录。任务记录会保存到 Pi 会话中，风险检查、自定义规则和续跑判断共享它。输入较长时会标注截断；分类上下文上限为 16,000 字符，最多保留 32 条约束，超过限制不静默丢弃约束。
+
+真实 API 小样例：`npx tsx scripts/live-frame.ts`。它测试连续中文对话的类别、目标保留和约束保留，不执行任何业务操作；结果不等同于完整基准准确率。
